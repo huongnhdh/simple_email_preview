@@ -145,18 +145,4 @@ All of the available hooks can be found [here](/lib/simple_email_preview/view_ho
 
 
 
-## Development
-
-Run the tests:
-
-```console
-$ rspec
-```
-
-Start a development web server on [localhost:9292](http://localhost:9292):
-
-```console
-$ rake dev
-```
-
 This project rocks and uses MIT-LICENSE.
