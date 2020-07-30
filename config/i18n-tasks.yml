@@ -1,0 +1,10 @@
+base_locale: en
+locales: [en, de, ru, es]
+search:
+  paths:
+  - app/
+  - lib/
+data:
+  yaml:
+    write:
+      line_width: -1

@@ -1,0 +1,194 @@
+module SimpleEmailPreview
+  class EmailsController < ::SimpleEmailPreview::ApplicationController
+    include ERB::Util
+    include Rails.application.routes.url_helpers
+    before_action :load_preview, except: :index
+    # around_action :set_locale
+    before_action :set_email_preview_locale
+    helper_method :with_email_locale
+    helper_method :preview_params
+    before_action :add_breadcrumbs
+    before_action :set_title
+
+    def add_breadcrumbs
+      super if defined?(super)
+    end
+
+    def set_title
+      if defined?(super)
+        super
+      else
+        @title = t('email_preview')
+      end
+    end
+
+    # List of emails
+    def index
+      if defined?(super)
+        super
+      else
+        @previews = Preview.all
+        @list     = PreviewListPresenter.new(@previews)
+      end
+    end
+
+    # Preview an email
+    def show
+      if defined?(super)
+        super
+      else
+        prevent_browser_caching
+        # with_email_locale do
+        if @preview.respond_to?(:preview_mail)
+          @mail, body     = mail_and_body
+          @mail_body_html = render_to_string(inline: body, layout: 'simple_email_preview/email')
+        else
+          raise ArgumentError, "#{@preview} is not a preview class, does not respond_to?(:preview_mail)"
+        end
+      end
+    end
+
+    # Really deliver an email
+    def test_deliver
+      redirect_url = simple_email_preview.rep_email_url(preview_params.except(:recipient_email))
+      if (address = params[:recipient_email]).blank? || address !~ /@/
+        redirect_to redirect_url, alert: t('rep.test_deliver.provide_email')
+        return
+      end
+      with_email_locale do
+        delivery_handler = SimpleEmailPreview::DeliveryHandler.new(preview_mail, to: address, cc: nil, bcc: nil)
+        deliver_email!(delivery_handler.mail)
+      end
+      delivery_method = Rails.application.config.action_mailer.delivery_method
+      if delivery_method
+        redirect_to redirect_url, notice: t('rep.test_deliver.sent_notice', address: address, delivery_method: delivery_method)
+      else
+        redirect_to redirect_url, alert: t('rep.test_deliver.no_delivery_method', environment: Rails.env)
+      end
+    end
+
+    # Download attachment
+    def show_attachment
+      with_email_locale do
+        filename   = "#{params[:filename]}.#{params[:format]}"
+        attachment = preview_mail(false).attachments.find { |a| a.filename == filename }
+        send_data attachment.body.raw_source, filename: filename
+      end
+    end
+
+    # Render headers partial. Used by the CMS integration to refetch headers after editing.
+    def show_headers
+      mail = with_email_locale { mail_and_body.first }
+      render partial: 'simple_email_preview/emails/headers', locals: { mail: mail }
+    end
+
+    # Render email body iframe HTML. Used by the CMS integration to provide a link back to Show from Edit.
+    def show_body
+      prevent_browser_caching
+      cms_edit_links!
+      with_email_locale do
+        _, body = mail_and_body
+        render inline: body, layout: 'simple_email_preview/email'
+      end
+    end
+
+    private
+
+    def preview_params
+      if Rails::VERSION::MAJOR >= 5
+        params.to_unsafe_h.except(*(request.path_parameters.keys - [:email_locale]))
+      else
+        params.except(*(request.path_parameters.keys - [:email_locale]))
+      end
+    end
+
+    def deliver_email!(mail)
+      if mail.respond_to?(:deliver_now!)
+        # ActiveJob
+        mail.deliver_now!
+      elsif mail.respond_to?(:deliver!)
+        # support deliver! if present (resque-mailer etc)
+        mail.deliver!
+      else
+        mail.deliver
+      end
+    end
+
+    # Load mail and its body for preview
+    # @return [[Mail, String]] the mail object and its body
+    def mail_and_body
+      mail = preview_mail
+      body = mail_body_content(mail, @part_type)
+      [mail, body]
+    end
+
+    # @param [Boolean] run_handlers whether to run the registered handlers for Mail object
+    # @return [Mail]
+    def preview_mail(run_handlers = true)
+      @preview.preview_mail(run_handlers, preview_params)
+    end
+
+    # @param [Mail] mail
+    # @param ['html', 'plain', 'raw']
+    # @return [String] version of the email for HTML
+    def mail_body_content(mail, part_type)
+      return "<pre id='raw_message'>#{html_escape(mail.to_s)}</pre>".html_safe if part_type == 'raw'
+
+      body_part = if mail.multipart?
+                    (part_type =~ /html/ ? mail.html_part : mail.text_part)
+                  else
+                    mail
+                  end
+      return "<pre id='error'>#{html_escape(t('rep.errors.email_missing_format', locale: @ui_locale))}</pre>" unless body_part
+      if body_part.content_type =~ /plain/
+        "<pre id='message_body'>#{html_escape(body_part.body.to_s)}</pre>".html_safe
+      else
+        body_content = body_part.body.to_s
+
+        mail.attachments.each do |attachment|
+          web_url = simple_email_preview.rep_raw_email_attachment_url(params[:preview_id], attachment.filename)
+          body_content.gsub!(attachment.url, web_url)
+        end
+
+        body_content.html_safe
+      end
+    end
+
+    def with_email_locale(&block)
+      I18n.with_locale @email_locale, &block
+    end
+
+    # Email content locale
+    def set_email_preview_locale
+      @email_locale = (params[:email_locale] || SimpleEmailPreview.default_email_locale || I18n.default_locale).to_s
+    end
+
+    # UI locale
+    def set_locale
+      @ui_locale = SimpleEmailPreview.locale
+      unless I18n.available_locales.map(&:to_s).include?(@ui_locale.to_s)
+        @ui_locale = :en
+      end
+      begin
+        locale_was  = I18n.locale
+        I18n.locale = @ui_locale
+        yield if block_given?
+      ensure
+        I18n.locale = locale_was
+      end
+    end
+
+    # Let REP's `cms_email_snippet` know to render an Edit link
+    # Todo: Refactoring is especially welcome here
+    def cms_edit_links!
+      RequestStore.store[:rep_edit_links] = (@part_type == 'html')
+    end
+
+    def load_preview
+      @preview = ::SimpleEmailPreview::Preview[params[:preview_id]]
+      raise ActionController::RoutingError.new('Not Found') unless @preview
+      # @preview = ::RailsEmailPreview::Preview[params[:preview_id]] || raise ActionController::RoutingError.new('Not Found')
+      @part_type = params[:part_type] || 'text'
+    end
+  end
+end

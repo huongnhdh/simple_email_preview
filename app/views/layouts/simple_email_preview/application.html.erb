@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title><%= t('.head_title') %></title>
+  <%= stylesheet_link_tag 'simple_email_preview/application' %>
+  <%= javascript_include_tag 'simple_email_preview/application' %>
+  <%= favicon_link_tag 'simple_email_preview/favicon.png' %>
+  <%= yield(:head) %>
+</head>
+<body>
+<div class="rep-standalone-container">
+  <%= render 'layouts/simple_email_preview/flash_notices' %>
+  <%= yield %>
+</div>
+</body>
+</html>
